@@ -1,21 +1,54 @@
-NGINX_LOG=/var/log/nginx/access.log
-MYSQL_LOG=/var/log/mysql/mysql-slow.log
+include env.sh
 
-# サービスの管理
+# ----- 設定ファイルの取得、反映 -----
+USER=isucon
+
+check-server-id:
+ifdef SERVER_ID
+	@echo "SERVER_ID=$(SERVER_ID)"
+else
+	@echo "SERVER_ID is unset"
+	@exit 1
+endif
+
+NGINX_CONF_PATH=/etc/nginx
+DB_CONF_PATH=/etc/mysql
+
+get-nginx-conf:
+	mkdir -p $(SERVER_ID)$(NGINX_CONF_PATH)
+	sudo cp -R $(NGINX_CONF_PATH)/* $(SERVER_ID)$(NGINX_CONF_PATH)
+	sudo chown -R $(USER) $(SERVER_ID)$(NGINX_CONF_PATH)
+get-db-conf:
+	mkdir -p $(SERVER_ID)$(DB_CONF_PATH)
+	sudo cp -R $(DB_CONF_PATH)/* $(SERVER_ID)$(DB_CONF_PATH)
+	sudo chown -R $(USER) $(SERVER_ID)$(DB_CONF_PATH)
+get-conf: check-server-id get-nginx-conf get-db-conf
+
+deploy-nginx-conf:
+	sudo cp -R $(SERVER_ID)$(NGINX_CONF_PATH)/* $(NGINX_CONF_PATH)
+deploy-db-conf:
+	sudo cp -R $(SERVER_ID)$(DB_CONF_PATH)/* $(DB_CONF_PATH)
+deploy-conf: check-server-id deploy-nginx-conf deploy-db-conf
+
+# ----- サービスの管理 -----
 reload-nginx:
-	cat settings/nginx/nginx.conf | sudo tee /etc/nginx/nginx.conf > /dev/null
+	@make deploy-nginx-conf
 	sudo nginx -s reload
 
 APP_SERVICE=TODO:
 reload-app:
 	sudo systemctl restart $(APP_SERVICE)
 status-app:
-	sudo systemctl status  $(APP_SERVICE)
+	sudo systemctl status $(APP_SERVICE)
+watch-log-app:
+	sudo journalctl -u $(APP_SERVICE) -n 10 -f
 
 MYSQL_SERVICE=TODO:
 reload-mysql:
-	cat settings/mysql/mysql.conf.d/mysqld.cnf | sudo tee /etc/mysql/mysql.conf.d/mysqld.cnf > /dev/null
+	@make deploy-db-conf
 	sudo systemctl restart $(MYSQL_SERVICE)
+status-mysql:
+	sudo systemctl status $(MYSQL_SERVICE)
 
 MYSQL_USER=TODO:
 MYSQL_PASSWORD=TODO:
@@ -23,7 +56,16 @@ MYSQL_DATABASE=TODO:
 enter-mysql:
 	mysql -u $(MYSQL_USER) -p$(MYSQL_PASSWORD) -D $(MYSQL_DATABASE)
 
-# 分析
+# ----- 計測・分析 -----
+NGINX_LOG=/var/log/nginx/access.log
+MYSQL_LOG=/var/log/mysql/mysql-slow.log
+
+clear-logs:
+	echo '' | sudo tee $(NGINX_LOG) > /dev/null
+	echo '' | sudo tee $(MYSQL_LOG) > /dev/null
+
+before-bench: clear-logs reload-app watch-log-app
+
 ALPSORT=sum
 ALPM="TODO:"
 OUTFORMAT=count,method,uri,min,max,sum,avg,p99,1xx,2xx,3xx,4xx,5xx
@@ -34,17 +76,13 @@ alp:
 pt-query-digest:
 	sudo pt-query-digest $(MYSQL_LOG)
 
-clear-logs:
-	echo '' | sudo tee $(NGINX_LOG) > /dev/null
-	echo '' | sudo tee $(MYSQL_LOG) > /dev/null
-
 analyze:
 	$(eval DIR := measurements/$(shell date +%Y%m%d-%H%M%S))
 	mkdir -p $(DIR)
 	@make alp > $(DIR)/alp.log
 	@make pt-query-digest > $(DIR)/query.log
 
-# ツールのインストール
+# ----- ツールのインストール -----
 setup-git:
 	cd ~/.ssh && ssh-keygen -t rsa
 	git config --global user.email tekihei2317@gmail.com
@@ -58,4 +96,11 @@ install-alp:
 
 setup:
 	@make install-alp
-	sudo apt update && sudo apt install -y percona-toolkit jq net-tools
+	sudo apt update && sudo apt install -y percona-toolkit jq net-tools dstat
+	npm install -g ts-node
+
+# ----- リクエスト -----
+BASE_URL=http://localhost:3000
+
+get-home:
+	curl $(BASE_URL)
